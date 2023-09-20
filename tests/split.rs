@@ -29,11 +29,11 @@ use fastwebsockets::WebSocketWrite;
 use hyper::header::CONNECTION;
 use hyper::header::UPGRADE;
 use hyper::upgrade::Upgraded;
-use std::cell::RefCell;
+
 use std::future::Future;
-use std::rc::Rc;
+
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::channel;
+
 use tokio::sync::mpsc::unbounded_channel;
 
 const N_CLIENTS: usize = 20;
@@ -98,12 +98,14 @@ async fn connect(
 }
 
 async fn start_client(client_id: usize) -> Result<()> {
-  let (mut r, mut w) = connect(client_id).await.unwrap();
-  let (write_queue_tx, write_queue_rx) = unbounded_channel();
+  let (mut r, _w) = connect(client_id).await.unwrap();
+  let (write_queue_tx, _write_queue_rx) = unbounded_channel();
   let frame = r
     .read_frame(|frame| {
-      write_queue_tx.send(frame);
-      async { Ok(()) }
+      let res = write_queue_tx
+        .send(frame)
+        .map_err(|_| Box::<dyn std::error::Error + Send + Sync>::from("Failed to send frame".to_owned()));
+      async { res }
     })
     .await?;
   match frame.opcode {

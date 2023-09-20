@@ -170,6 +170,7 @@ use tokio::io::AsyncWriteExt;
 pub use crate::close::CloseCode;
 pub use crate::error::WebSocketError;
 pub use crate::fragment::FragmentCollector;
+pub use crate::fragment::FragmentCollectorRead;
 pub use crate::frame::Frame;
 pub use crate::frame::OpCode;
 pub use crate::frame::Payload;
@@ -241,6 +242,12 @@ where
 }
 
 impl<'f, S> WebSocketRead<S> {
+  /// Consumes the `WebSocketRead` and returns the underlying stream.
+  #[inline]
+  pub(crate) fn into_parts_internal(self) -> (S, ReadHalf) {
+    (self.stream, self.read_half)
+  }
+
   pub fn set_writev_threshold(&mut self, threshold: usize) {
     self.read_half.writev_threshold = threshold;
   }
@@ -274,19 +281,21 @@ impl<'f, S> WebSocketRead<S> {
   }
 
   /// Reads a frame from the stream.
-  pub async fn read_frame<R>(
+  pub async fn read_frame<R, E>(
     &mut self,
-    mut send_fn: impl FnMut(Frame<'f>) -> R,
+    send_fn: &mut impl FnMut(Frame<'f>) -> R,
   ) -> Result<Frame, WebSocketError>
   where
     S: AsyncReadExt + Unpin,
-    R: Future<Output = Result<(), WebSocketError>>,
+    E: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    R: Future<Output = Result<(), E>>,
   {
     loop {
       let (res, obligated_send) =
         self.read_half.read_frame_inner(&mut self.stream).await;
       if let Some(frame) = obligated_send {
-        send_fn(frame).await?;
+        let res = send_fn(frame).await;
+        res.map_err(|e| WebSocketError::SendError(e.into()))?;
       }
       if let Some(frame) = res? {
         break Ok(frame);
@@ -312,6 +321,10 @@ impl<'f, S> WebSocketWrite<S> {
   /// Default: `true`
   pub fn set_auto_apply_mask(&mut self, auto_apply_mask: bool) {
     self.write_half.auto_apply_mask = auto_apply_mask;
+  }
+
+  pub fn is_closed(&self) -> bool {
+    self.write_half.closed
   }
 
   pub async fn write_frame(
@@ -368,7 +381,7 @@ impl<'f, S> WebSocket<S> {
 
   pub fn split<R, W>(
     self,
-    split_fn: impl Fn(S) -> (R, W)
+    split_fn: impl Fn(S) -> (R, W),
   ) -> (WebSocketRead<R>, WebSocketWrite<W>)
   where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
@@ -443,6 +456,10 @@ impl<'f, S> WebSocket<S> {
   pub fn set_auto_apply_mask(&mut self, auto_apply_mask: bool) {
     self.read_half.auto_apply_mask = auto_apply_mask;
     self.write_half.auto_apply_mask = auto_apply_mask;
+  }
+
+  pub fn is_closed(&self) -> bool {
+    self.write_half.closed
   }
 
   /// Writes a frame to the stream.
@@ -746,6 +763,8 @@ impl WriteHalf {
 
     if frame.opcode == OpCode::Close {
       self.closed = true;
+    } else if self.closed {
+      return Err(WebSocketError::ConnectionClosed);
     }
 
     if self.vectored && frame.payload.len() > self.writev_threshold {
