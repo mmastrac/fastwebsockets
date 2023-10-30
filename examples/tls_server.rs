@@ -20,12 +20,13 @@ use hyper::service::service_fn;
 use hyper::Body;
 use hyper::Request;
 use hyper::Response;
+use rustls_tokio_stream::rustls;
+use rustls_tokio_stream::rustls::Certificate;
+use rustls_tokio_stream::rustls::PrivateKey;
+use rustls_tokio_stream::rustls::ServerConfig;
+use rustls_tokio_stream::TlsStream;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio_rustls::rustls;
-use tokio_rustls::rustls::Certificate;
-use tokio_rustls::rustls::PrivateKey;
-use tokio_rustls::TlsAcceptor;
 
 async fn handle_client(fut: upgrade::UpgradeFut) -> Result<()> {
   let mut ws = fut.await?;
@@ -58,7 +59,7 @@ async fn server_upgrade(mut req: Request<Body>) -> Result<Response<Body>> {
   Ok(response)
 }
 
-fn tls_acceptor() -> Result<TlsAcceptor> {
+fn server_config() -> Result<ServerConfig> {
   static KEY: &[u8] = include_bytes!("./localhost.key");
   static CERT: &[u8] = include_bytes!("./localhost.crt");
 
@@ -74,20 +75,20 @@ fn tls_acceptor() -> Result<TlsAcceptor> {
     .with_safe_defaults()
     .with_no_client_auth()
     .with_single_cert(certs, keys.remove(0))?;
-  Ok(TlsAcceptor::from(Arc::new(config)))
+  Ok(config)
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-  let acceptor = tls_acceptor()?;
   let listener = TcpListener::bind("127.0.0.1:8080").await?;
   println!("Server started, listening on {}", "127.0.0.1:8080");
+  let server_config = Arc::new(server_config()?);
   loop {
     let (stream, _) = listener.accept().await?;
     println!("Client connected");
-    let acceptor = acceptor.clone();
+    let server_config = server_config.clone();
     tokio::spawn(async move {
-      let stream = acceptor.accept(stream).await.unwrap();
+      let stream = TlsStream::new_server_side(stream, server_config, None);
       let conn_fut = Http::new()
         .serve_connection(stream, service_fn(server_upgrade))
         .with_upgrades();

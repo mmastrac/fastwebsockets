@@ -40,8 +40,8 @@ upgrade = ["hyper", "pin-project", "base64", "sha1"]
 unstable-split = []
 
 [dev-dependencies]
-tokio = { version = "1.25.0", features = ["full", "macros"] }
-tokio-rustls = "0.24.0"
+tokio = { version = "1", features = ["full", "macros"] }
+rustls-tokio-stream = "=0.2.6"
 rustls-pemfile = "1.0"
 hyper = { version = "0.14.26", features = ["http1", "server", "client", "tcp"] }
 assert2 = "0.3.4"
